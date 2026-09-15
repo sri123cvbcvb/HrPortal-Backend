@@ -16,6 +16,7 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.*;
 
+import java.time.LocalDate;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -96,6 +97,10 @@ public class AdminController {
         if (request.getHraPercentage()               != null) employee.setHraPercentage(request.getHraPercentage());
         if (request.getSpecialAllowancePercentage()  != null) employee.setSpecialAllowancePercentage(request.getSpecialAllowancePercentage());
 
+        // Employment Dates
+        if (request.getDateOfJoining() != null) employee.setDateOfJoining(request.getDateOfJoining());
+        if (request.getDateOfExit()    != null) employee.setDateOfExit(request.getDateOfExit());
+
         userRepository.save(employee);
         return ResponseEntity.ok(new MessageResponse("Employee updated successfully!"));
     }
@@ -113,6 +118,24 @@ public class AdminController {
         User user = new User(signUpRequest.getFirstName(), signUpRequest.getLastName(),
                 signUpRequest.getUsername(), signUpRequest.getEmail(),
                 encoder.encode(signUpRequest.getPassword()));
+
+        // Statutory fields from SignupRequest
+        if (signUpRequest.getAadhaarNumber()               != null) user.setAadhaarNumber(signUpRequest.getAadhaarNumber());
+        if (signUpRequest.getPanNumber()                   != null) user.setPanNumber(signUpRequest.getPanNumber());
+        if (signUpRequest.getPfApplicable()                != null) user.setPfApplicable(signUpRequest.getPfApplicable());
+        if (signUpRequest.getPfUan()                       != null) user.setPfUan(signUpRequest.getPfUan());
+        if (signUpRequest.getPfAccount()                   != null) user.setPfAccount(signUpRequest.getPfAccount());
+        if (signUpRequest.getBankName()                    != null) user.setBankName(signUpRequest.getBankName());
+        if (signUpRequest.getBankAccountNumber()           != null) user.setBankAccountNumber(signUpRequest.getBankAccountNumber());
+        if (signUpRequest.getIfscCode()                    != null) user.setIfscCode(signUpRequest.getIfscCode());
+        if (signUpRequest.getAccountHolderName()           != null) user.setAccountHolderName(signUpRequest.getAccountHolderName());
+        if (signUpRequest.getAnnualCtc()                   != null) user.setAnnualCtc(signUpRequest.getAnnualCtc());
+        if (signUpRequest.getBasicPercentage()             != null) user.setBasicPercentage(signUpRequest.getBasicPercentage());
+        if (signUpRequest.getHraPercentage()               != null) user.setHraPercentage(signUpRequest.getHraPercentage());
+        if (signUpRequest.getSpecialAllowancePercentage()  != null) user.setSpecialAllowancePercentage(signUpRequest.getSpecialAllowancePercentage());
+        // Employment Dates
+        if (signUpRequest.getDateOfJoining()               != null) user.setDateOfJoining(signUpRequest.getDateOfJoining());
+        if (signUpRequest.getDateOfExit()                  != null) user.setDateOfExit(signUpRequest.getDateOfExit());
 
         Set<Role> roles = new HashSet<>();
         Role userRole = roleRepository.findByName(RoleName.ROLE_EMPLOYEE)
@@ -154,6 +177,9 @@ public class AdminController {
         private String lastName;
         private String username;
         private String email;
+        // Employment Dates
+        private LocalDate dateOfJoining;
+        private LocalDate dateOfExit;
         // Statutory
         private String aadhaarNumber;
         private String panNumber;
@@ -179,6 +205,8 @@ public class AdminController {
             dto.lastName = u.getLastName();
             dto.username = u.getUsername();
             dto.email = u.getEmail();
+            dto.dateOfJoining = u.getDateOfJoining();
+            dto.dateOfExit = u.getDateOfExit();
             dto.aadhaarNumber = u.getAadhaarNumber();
             dto.panNumber = u.getPanNumber();
             dto.pfApplicable = u.getPfApplicable();
@@ -202,6 +230,8 @@ public class AdminController {
         public String getLastName() { return lastName; }
         public String getUsername() { return username; }
         public String getEmail() { return email; }
+        public LocalDate getDateOfJoining() { return dateOfJoining; }
+        public LocalDate getDateOfExit() { return dateOfExit; }
         public String getAadhaarNumber() { return aadhaarNumber; }
         public String getPanNumber() { return panNumber; }
         public Boolean getPfApplicable() { return pfApplicable; }

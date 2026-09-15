@@ -10,4 +10,5 @@ import java.util.List;
 @Repository
 public interface CompanyLeaveRepository extends JpaRepository<CompanyLeave, Long> {
     List<CompanyLeave> findByDateBetween(LocalDate startDate, LocalDate endDate);
+    boolean existsByDate(LocalDate date);
 }

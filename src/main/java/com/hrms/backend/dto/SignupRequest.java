@@ -4,6 +4,7 @@ import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
 import lombok.Data;
 
+import java.time.LocalDate;
 import java.util.Set;
 
 @Data
@@ -27,6 +28,11 @@ public class SignupRequest {
     private String password;
 
     // --- Statutory & Payroll Fields ---
+
+    // Employment Dates
+    private LocalDate dateOfJoining;
+    private LocalDate dateOfExit;
+
     private String aadhaarNumber;
     private String panNumber;
 

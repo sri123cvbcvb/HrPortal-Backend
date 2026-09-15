@@ -22,7 +22,7 @@ public interface LeaveRequestRepository extends JpaRepository<LeaveRequest, Long
         // For pending dashboard widget
         List<LeaveRequest> findByStatusOrderByCreatedAtDesc(LeaveRequest.LeaveStatus status);
 
-        // Count CL/PL leaves in a given month (monthly limit validation)
+        // Count CL/PL leaves in a given month (kept for reference, no longer used for hard limit)
         @Query("SELECT COUNT(lr) FROM LeaveRequest lr WHERE lr.employee = :employee " +
                         "AND lr.leaveType = :leaveType " +
                         "AND lr.status IN (com.hrms.backend.model.LeaveRequest$LeaveStatus.PENDING, com.hrms.backend.model.LeaveRequest$LeaveStatus.APPROVED) "
@@ -41,7 +41,7 @@ public interface LeaveRequestRepository extends JpaRepository<LeaveRequest, Long
                         @Param("startDate") LocalDate startDate,
                         @Param("endDate") LocalDate endDate);
 
-        // Detect any overlapping leave requests (overlap validation)
+        // Detect any overlapping leave requests (overlap validation — date range level)
         @Query("SELECT COUNT(lr) FROM LeaveRequest lr WHERE lr.employee = :employee " +
                         "AND lr.status IN (com.hrms.backend.model.LeaveRequest$LeaveStatus.PENDING, com.hrms.backend.model.LeaveRequest$LeaveStatus.APPROVED) "
                         +
@@ -49,4 +49,12 @@ public interface LeaveRequestRepository extends JpaRepository<LeaveRequest, Long
         long countOverlappingLeaves(@Param("employee") User employee,
                         @Param("fromDate") LocalDate fromDate,
                         @Param("toDate") LocalDate toDate);
+
+        // Fetch pending or approved leaves that touch a specific date (for detailed overlap check)
+        @Query("SELECT lr FROM LeaveRequest lr WHERE lr.employee = :employee " +
+                        "AND lr.status IN (com.hrms.backend.model.LeaveRequest$LeaveStatus.PENDING, com.hrms.backend.model.LeaveRequest$LeaveStatus.APPROVED) "
+                        +
+                        "AND lr.fromDate <= :date AND lr.toDate >= :date")
+        List<LeaveRequest> findApprovedOrPendingForDate(@Param("employee") User employee,
+                        @Param("date") LocalDate date);
 }

@@ -55,4 +55,17 @@ public class LeaveRequestController {
         LeaveRequest request = leaveService.applyForLeave(employee, dto);
         return ResponseEntity.ok(request);
     }
+
+    /**
+     * Cancel a leave request (PENDING or APPROVED).
+     * If the leave was already approved, attendance mutations are reverted and balance is restored.
+     */
+    @DeleteMapping("/{requestId}/cancel")
+    public ResponseEntity<LeaveRequest> cancelLeave(@PathVariable Long requestId,
+            Authentication authentication) {
+        User employee = userRepository.findByUsername(authentication.getName())
+                .orElseThrow(() -> new RuntimeException("User not found"));
+        LeaveRequest cancelled = leaveService.cancelLeave(requestId, employee);
+        return ResponseEntity.ok(cancelled);
+    }
 }

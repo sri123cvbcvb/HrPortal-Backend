@@ -44,8 +44,16 @@ public class AttendanceService {
                 .collect(Collectors.toSet());
 
         List<AttendanceRecord> records = attendanceRepository.findByUserAndDateBetween(user, startOfMonth, endOfMonth);
+
+        // Full present days
         Set<LocalDate> presentDates = records.stream()
-                .filter(r -> "Present".equalsIgnoreCase(r.getStatus()))
+                .filter(r -> r.getStatus() != null && r.getStatus().equalsIgnoreCase("Present"))
+                .map(AttendanceRecord::getDate)
+                .collect(Collectors.toSet());
+
+        // Half-day present: count as 0.5
+        Set<LocalDate> halfDayPresentDates = records.stream()
+                .filter(r -> r.getStatus() != null && r.getStatus().equalsIgnoreCase("Half Day Present"))
                 .map(AttendanceRecord::getDate)
                 .collect(Collectors.toSet());
 
@@ -65,7 +73,18 @@ public class AttendanceService {
 
         int totalWorkingDays = 0;
         int absentDays = 0;
-        int presentDays = presentDates.size();
+        // Full present days count as 1, half-day present count as 0.5
+        double presentDays = presentDates.size() + (halfDayPresentDates.size() * 0.5);
+
+        // Also treat attendance records with leave status codes (SL/CL/PL/L) as on-leave
+        Set<LocalDate> attendanceLeaveDates = records.stream()
+                .filter(r -> r.getStatus() != null && (
+                        r.getStatus().equalsIgnoreCase("SL") ||
+                        r.getStatus().equalsIgnoreCase("CL") ||
+                        r.getStatus().equalsIgnoreCase("PL") ||
+                        r.getStatus().equalsIgnoreCase("L")))
+                .map(AttendanceRecord::getDate)
+                .collect(Collectors.toSet());
 
         for (int day = 1; day <= yearMonth.lengthOfMonth(); day++) {
             LocalDate date = yearMonth.atDay(day);
@@ -75,16 +94,20 @@ public class AttendanceService {
             if (!isSunday && !isCompanyLeave) {
                 totalWorkingDays++;
 
-                // Count as absent only if: past date, no check-in record, AND no approved leave
-                if (date.isBefore(today) && !presentDates.contains(date) && !onLeaveDates.contains(date)) {
+                // Count as absent only if: past date, not present, not half-day, not on approved leave, not on leave record
+                if (date.isBefore(today)
+                        && !presentDates.contains(date)
+                        && !halfDayPresentDates.contains(date)
+                        && !onLeaveDates.contains(date)
+                        && !attendanceLeaveDates.contains(date)) {
                     absentDays++;
                 }
             }
         }
 
-        double percentage = totalWorkingDays > 0 ? ((double) presentDays / totalWorkingDays) * 100 : 0.0;
+        double percentage = totalWorkingDays > 0 ? (presentDays / totalWorkingDays) * 100 : 0.0;
 
-        return new AttendanceSummaryDto(startOfMonth, totalWorkingDays, presentDays, absentDays, percentage);
+        return new AttendanceSummaryDto(startOfMonth, totalWorkingDays, (int) Math.round(presentDays), absentDays, percentage);
     }
 
     public List<MonthlyAttendanceDto> getMonthlyAttendance(User user, int year, int month) {
@@ -111,7 +134,8 @@ public class AttendanceService {
         // 3. Load APPROVED employee leave requests (may span multiple days)
         List<LeaveRequest> approvedLeaves = leaveRequestRepository.findApprovedLeavesInRange(user, startOfMonth,
                 endOfMonth);
-        // Build a map from each covered date to the leave type abbreviation
+        // Build a map from each covered date to the leave request and leave type abbreviation
+        Map<LocalDate, LeaveRequest> leaveRequestMap = new HashMap<>();
         Map<LocalDate, String> leaveTypeMap = new HashMap<>();
         for (LeaveRequest lr : approvedLeaves) {
             LocalDate d = lr.getFromDate();
@@ -128,6 +152,7 @@ public class AttendanceService {
                     else
                         code = "L"; // generic leave
                     leaveTypeMap.put(d, code);
+                    leaveRequestMap.put(d, lr);
                 }
                 d = d.plusDays(1);
             }
@@ -144,16 +169,75 @@ public class AttendanceService {
             String status;
             String signIn = null;
             String signOut = null;
+            String leaveSession = null;
+            String leaveType = null;
+            String leaveNote = null;
 
             if (isSunday) {
                 status = "O"; // Weekly Off
             } else if (isHoliday) {
                 status = "H"; // Public Holiday
-            } else if (leaveTypeMap.containsKey(date)) {
-                status = leaveTypeMap.get(date); // SL, CL, PL etc.
+            } else if (leaveRequestMap.containsKey(date)) {
+                LeaveRequest lr = leaveRequestMap.get(date);
+                leaveType = leaveTypeMap.get(date);
+                boolean isHalfDay = false;
+                if (lr.getFromDate().equals(lr.getToDate())) {
+                    if (lr.getSessionFrom() == LeaveRequest.LeaveSession.SESSION_1) {
+                        isHalfDay = true;
+                        leaveSession = "SESSION_1";
+                    } else if (lr.getSessionFrom() == LeaveRequest.LeaveSession.SESSION_2) {
+                        isHalfDay = true;
+                        leaveSession = "SESSION_2";
+                    } else if (lr.getSessionFrom() == LeaveRequest.LeaveSession.FULL_DAY) {
+                        leaveSession = "FULL_DAY";
+                    }
+                } else {
+                    if (date.equals(lr.getFromDate()) && lr.getSessionFrom() == LeaveRequest.LeaveSession.SESSION_2) {
+                        isHalfDay = true;
+                        leaveSession = "SESSION_2";
+                    } else if (date.equals(lr.getToDate()) && lr.getSessionTo() == LeaveRequest.LeaveSession.SESSION_1) {
+                        isHalfDay = true;
+                        leaveSession = "SESSION_1";
+                    } else {
+                        leaveSession = "FULL_DAY";
+                    }
+                }
+
+                AttendanceRecord rec = attendanceMap.get(date);
+                if (rec != null && rec.getLeaveNote() != null) {
+                    leaveNote = rec.getLeaveNote();
+                }
+                if (isHalfDay && rec != null && rec.getCheckInTime() != null) {
+                    status = "HP"; // Half Day Present
+                    signIn = rec.getCheckInTime().format(timeFormatter);
+                    if (rec.getCheckOutTime() != null) {
+                        signOut = rec.getCheckOutTime().format(timeFormatter);
+                    }
+                } else {
+                    // Full day leave or half day without check-in
+                    status = leaveType; // SL, CL, PL etc.
+                    if (rec != null) {
+                        if (rec.getCheckInTime() != null)
+                            signIn = rec.getCheckInTime().format(timeFormatter);
+                        if (rec.getCheckOutTime() != null)
+                            signOut = rec.getCheckOutTime().format(timeFormatter);
+                    }
+                }
             } else if (attendanceMap.containsKey(date)) {
                 AttendanceRecord rec = attendanceMap.get(date);
-                status = "P";
+                if ("Half Day Present".equalsIgnoreCase(rec.getStatus())) {
+                    status = "HP";
+                } else {
+                    status = "P";
+                }
+                if (rec.getLeaveNote() != null) {
+                    leaveNote = rec.getLeaveNote();
+                    if (rec.getLeaveNote().contains("SESSION_1")) {
+                        leaveSession = "SESSION_1";
+                    } else if (rec.getLeaveNote().contains("SESSION_2")) {
+                        leaveSession = "SESSION_2";
+                    }
+                }
                 if (rec.getCheckInTime() != null)
                     signIn = rec.getCheckInTime().format(timeFormatter);
                 if (rec.getCheckOutTime() != null)
@@ -164,7 +248,7 @@ public class AttendanceService {
                 status = null; // Future date — no status
             }
 
-            result.add(new MonthlyAttendanceDto(date, status, "GEN", signIn, signOut));
+            result.add(new MonthlyAttendanceDto(date, status, "GEN", signIn, signOut, leaveSession, leaveType, leaveNote));
         }
 
         return result;

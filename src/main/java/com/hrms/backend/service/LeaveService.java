@@ -1,15 +1,9 @@
 package com.hrms.backend.service;
 
 import com.hrms.backend.dto.LeaveRequestDto;
-import com.hrms.backend.model.LeaveBalance;
-import com.hrms.backend.model.LeaveRequest;
-import com.hrms.backend.model.LeaveType;
-import com.hrms.backend.model.User;
-import com.hrms.backend.repository.CompanyLeaveRepository;
-import com.hrms.backend.repository.LeaveBalanceRepository;
-import com.hrms.backend.repository.LeaveRequestRepository;
-import com.hrms.backend.repository.LeaveTypeRepository;
-import com.hrms.backend.repository.UserRepository;
+import com.hrms.backend.model.*;
+import com.hrms.backend.repository.*;
+import com.hrms.backend.util.ShiftUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Service;
@@ -17,33 +11,30 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.DayOfWeek;
 import java.time.LocalDate;
+import java.time.LocalTime;
 import java.time.temporal.ChronoUnit;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 @Service
 public class LeaveService {
 
-    @Autowired
-    private LeaveRequestRepository leaveRequestRepository;
+    @Autowired private LeaveRequestRepository leaveRequestRepository;
+    @Autowired private LeaveBalanceRepository leaveBalanceRepository;
+    @Autowired private LeaveTypeRepository leaveTypeRepository;
+    @Autowired private UserRepository userRepository;
+    @Autowired private SimpMessagingTemplate messagingTemplate;
+    @Autowired private CompanyLeaveRepository companyLeaveRepository;
+    @Autowired private com.hrms.backend.repository.AttendanceRepository attendanceRepository;
+    @Autowired private com.hrms.backend.config.ShiftConfig shiftConfig;
+    @Autowired private AttendanceAuditLogRepository auditLogRepository;
 
-    @Autowired
-    private LeaveBalanceRepository leaveBalanceRepository;
+    // ─────────────────────────────────────────────────────────────────────────────
+    // LEAVE TYPES
+    // ─────────────────────────────────────────────────────────────────────────────
 
-    @Autowired
-    private LeaveTypeRepository leaveTypeRepository;
-
-    @Autowired
-    private UserRepository userRepository;
-
-    @Autowired
-    private SimpMessagingTemplate messagingTemplate;
-
-    @Autowired
-    private CompanyLeaveRepository companyLeaveRepository;
-
-    // --- Leave Types ---
     public List<LeaveType> getAllLeaveTypes() {
         return leaveTypeRepository.findAll();
     }
@@ -52,7 +43,10 @@ public class LeaveService {
         return leaveTypeRepository.save(leaveType);
     }
 
-    // --- Leave Balances ---
+    // ─────────────────────────────────────────────────────────────────────────────
+    // LEAVE BALANCES
+    // ─────────────────────────────────────────────────────────────────────────────
+
     public List<LeaveBalance> getBalancesForEmployee(User employee) {
         return leaveBalanceRepository.findByEmployee(employee);
     }
@@ -65,13 +59,9 @@ public class LeaveService {
     public LeaveBalance updateBalance(Long balanceId, double newRemainingDays) {
         LeaveBalance balance = leaveBalanceRepository.findById(balanceId)
                 .orElseThrow(() -> new RuntimeException("Leave balance record not found"));
-
-        // When admin specifies a new remaining balance explicitly:
-        // Adjust the total granted to match, keeping usedDays intact.
         double difference = newRemainingDays - balance.getRemainingDays();
         balance.setTotalGranted(balance.getTotalGranted() + difference);
         balance.setRemainingDays(newRemainingDays);
-
         return leaveBalanceRepository.save(balance);
     }
 
@@ -84,21 +74,20 @@ public class LeaveService {
     public void grantLeaveBalance(List<Long> employeeIds, Long leaveTypeId, double amount) {
         LeaveType type = leaveTypeRepository.findById(leaveTypeId)
                 .orElseThrow(() -> new RuntimeException("LeaveType not found"));
-
         List<User> employees = userRepository.findAllById(employeeIds);
-
         for (User employee : employees) {
             LeaveBalance balance = leaveBalanceRepository.findByEmployeeAndLeaveType(employee, type)
                     .orElse(new LeaveBalance(employee, type, 0));
-
-            // Add the granted amount to total granted and remaining days
             balance.setTotalGranted(balance.getTotalGranted() + amount);
             balance.setRemainingDays(balance.getRemainingDays() + amount);
             leaveBalanceRepository.save(balance);
         }
     }
 
-    // --- Employee Actions ---
+    // ─────────────────────────────────────────────────────────────────────────────
+    // EMPLOYEE ACTIONS
+    // ─────────────────────────────────────────────────────────────────────────────
+
     public List<LeaveRequest> getEmployeeLeaveHistory(User employee) {
         return leaveRequestRepository.findByEmployeeOrderByCreatedAtDesc(employee);
     }
@@ -108,102 +97,104 @@ public class LeaveService {
         LeaveType type = leaveTypeRepository.findById(dto.getLeaveTypeId())
                 .orElseThrow(() -> new RuntimeException("Leave type not found"));
 
-        double requestedDays = calculateLeaveDays(dto.getFromDate(), dto.getToDate(), dto.getSessionFrom(),
-                dto.getSessionTo());
+        LocalDate today = LocalDate.now();
+        double requestedDays = calculateLeaveDays(dto.getFromDate(), dto.getToDate(),
+                dto.getSessionFrom(), dto.getSessionTo());
 
-        // --- PRE-FLIGHT VALIDATIONS (run before type-specific policies) ---
-
-        // A. Leave Overlap Check: Employee cannot have another leave on the same dates
-        long overlapping = leaveRequestRepository.countOverlappingLeaves(
-                employee, dto.getFromDate(), dto.getToDate());
-        if (overlapping > 0) {
-            throw new RuntimeException(
-                    "You already have a leave applied on this date.\n" +
-                            "Multiple leave types cannot be applied for the same day.");
+        // ── A. WEEKEND CHECK ────────────────────────────────────────────────────
+        for (LocalDate d = dto.getFromDate(); !d.isAfter(dto.getToDate()); d = d.plusDays(1)) {
+            if (d.getDayOfWeek() == DayOfWeek.SUNDAY) {
+                throw new RuntimeException(
+                        "Selected date " + d + " falls on a Sunday (Weekly Off). " +
+                        "Leave cannot be applied on a weekly off day.");
+            }
         }
 
-        // B. Company Holiday Conflict Check
-        LocalDate checkDate = dto.getFromDate();
-        while (!checkDate.isAfter(dto.getToDate())) {
-            LocalDate finalCheckDate = checkDate;
-            boolean isHoliday = companyLeaveRepository.findByDateBetween(finalCheckDate, finalCheckDate)
-                    .stream().anyMatch(h -> h.getDate().equals(finalCheckDate));
+        // ── B. COMPANY HOLIDAY CHECK ────────────────────────────────────────────
+        for (LocalDate d = dto.getFromDate(); !d.isAfter(dto.getToDate()); d = d.plusDays(1)) {
+            final LocalDate finalD = d;
+            boolean isHoliday = companyLeaveRepository.findByDateBetween(finalD, finalD)
+                    .stream().anyMatch(h -> h.getDate().equals(finalD));
             if (isHoliday) {
                 throw new RuntimeException(
-                        "Selected date " + checkDate + " is already a company holiday.\n" +
-                                "Leave cannot be applied on a company holiday.");
+                        "Selected date " + d + " is already a company holiday. " +
+                        "Leave cannot be applied on a company holiday.");
             }
-            checkDate = checkDate.plusDays(1);
         }
 
-        // C. Weekly Off Conflict Check (Sunday)
-        checkDate = dto.getFromDate();
-        while (!checkDate.isAfter(dto.getToDate())) {
-            if (checkDate.getDayOfWeek() == DayOfWeek.SUNDAY) {
-                throw new RuntimeException(
-                        "Selected date " + checkDate + " falls on a Sunday (Weekly Off).\n" +
-                                "Leave cannot be applied on a weekly off day.");
-            }
-            checkDate = checkDate.plusDays(1);
-        }
-
-        // --- POLICY VALIDATIONS ---
+        // ── C. LEAVE TYPE DATE RESTRICTIONS ────────────────────────────────────
         String typeName = type.getName().toLowerCase();
 
-        // 1. Sick Leave (SL): Must be for the current date only
-        if (typeName.contains("sick") || typeName.equals("sl")) {
-            java.time.LocalDate today = java.time.LocalDate.now();
+        if (isSickLeave(typeName)) {
+            // SL: only today
             if (!dto.getFromDate().equals(today) || !dto.getToDate().equals(today)) {
-                throw new RuntimeException("Sick leave can only be applied for the current date.");
+                throw new RuntimeException(
+                        "Sick Leave can only be applied for the current date (" + today + "). " +
+                        "You cannot apply SL for past or future dates.");
+            }
+        } else if (isCasualLeave(typeName)) {
+            // CL: today or future only
+            if (dto.getFromDate().isBefore(today)) {
+                throw new RuntimeException(
+                        "Casual Leave cannot be applied for past dates. " +
+                        "CL is allowed for today (" + today + ") or future dates only.");
+            }
+        }
+        // PL: no date restriction — any past, current, or future date is allowed.
+
+        // ── D. SESSION TIME RESTRICTION ─────────────────────────────────────────
+        // If applying for today after second-half has started, only SESSION_2 is allowed
+        LocalTime secondHalfStart = ShiftUtils.getSecondHalfStart(employee, shiftConfig);
+
+        if (dto.getFromDate().equals(today) && LocalTime.now().isAfter(secondHalfStart)) {
+            if (dto.getSessionFrom() == LeaveRequest.LeaveSession.FULL_DAY ||
+                    dto.getSessionFrom() == LeaveRequest.LeaveSession.SESSION_1) {
+                throw new RuntimeException(
+                        "The first half has already passed. " +
+                        "You can only apply for Second Half leave now.");
+            }
+        }
+        if (dto.getToDate().equals(today) && LocalTime.now().isAfter(secondHalfStart)) {
+            if (dto.getSessionTo() == LeaveRequest.LeaveSession.FULL_DAY ||
+                    dto.getSessionTo() == LeaveRequest.LeaveSession.SESSION_1) {
+                throw new RuntimeException(
+                        "The first half has already passed for today's end date. " +
+                        "You can only apply for Second Half leave now.");
             }
         }
 
-        // 2. Casual Leave (CL) & Privilege Leave (PL): Only 1 per month
-        if (typeName.contains("casual") || typeName.equals("cl") ||
-                typeName.contains("privilege") || typeName.equals("pl")) {
-
-            java.time.LocalDate startOfMonth = dto.getFromDate().withDayOfMonth(1);
-            java.time.LocalDate endOfMonth = dto.getFromDate().withDayOfMonth(dto.getFromDate().lengthOfMonth());
-
-            long currentMonthLeaves = leaveRequestRepository.countLeavesInMonthForType(employee, type, startOfMonth,
-                    endOfMonth);
-            if (currentMonthLeaves >= 1) {
-                // Return exact message required by prompt
-                throw new RuntimeException("You have reached the " + type.getName() + " limit for this month.");
-            }
-        }
-
-        // 3. Time-based Session Restriction: If applied for today after 12:00 PM, only
-        // allow SECOND_HALF
-        if (dto.getFromDate().equals(java.time.LocalDate.now())) {
-            if (java.time.LocalTime.now().isAfter(java.time.LocalTime.of(12, 0))) {
-                if (dto.getSessionFrom() == LeaveRequest.LeaveSession.FULL_DAY ||
-                        dto.getSessionFrom() == LeaveRequest.LeaveSession.SESSION_1) {
+        // ── E. SECTION 9: Reject SESSION_2 leave if already checked in during 2nd half ──
+        // Only applicable for single-day SESSION_2 requests for today or past dates
+        if (dto.getSessionFrom() == LeaveRequest.LeaveSession.SESSION_2
+                && dto.getFromDate().equals(dto.getToDate())) {
+            Optional<AttendanceRecord> existingRecord =
+                    attendanceRepository.findByUserAndDate(employee, dto.getFromDate());
+            if (existingRecord.isPresent() && existingRecord.get().getCheckInTime() != null) {
+                LocalTime checkIn = existingRecord.get().getCheckInTime();
+                if (ShiftUtils.isCheckedInDuringSecondHalf(checkIn, secondHalfStart)) {
                     throw new RuntimeException(
-                            "You cannot apply full-day sick leave after the first half has passed.\nPlease select Second Half.");
+                            "You have already checked in during the second half (at " + checkIn + "). " +
+                            "Second-half leave cannot be applied for a period you are already attending.");
                 }
             }
         }
 
-        if (dto.getToDate().equals(java.time.LocalDate.now())) {
-            if (java.time.LocalTime.now().isAfter(java.time.LocalTime.of(12, 0))) {
-                if (dto.getSessionTo() == LeaveRequest.LeaveSession.FULL_DAY ||
-                        dto.getSessionTo() == LeaveRequest.LeaveSession.SESSION_1) {
-                    throw new RuntimeException(
-                            "You cannot apply full-day leave ending today after the first half has passed.\nPlease select Second Half.");
-                }
-            }
-        }
+        // ── F. OVERLAP CHECK ────────────────────────────────────────────────────
+        // Enhanced: also check half-day session overlap on same date
+        validateNoOverlap(employee, dto);
 
-        // Optional: Check balance here before allowing application
+        // ── G. BALANCE CHECK ────────────────────────────────────────────────────
         LeaveBalance balance = leaveBalanceRepository.findByEmployeeAndLeaveType(employee, type)
-                .orElseThrow(
-                        () -> new RuntimeException("No leave balance record found for this type. Please contact HR."));
+                .orElseThrow(() -> new RuntimeException(
+                        "No leave balance record found for " + type.getName() + ". Please contact HR."));
 
         if (balance.getRemainingDays() < requestedDays) {
-            throw new RuntimeException("Insufficient leave balance for this request.");
+            throw new RuntimeException(
+                    "Insufficient " + type.getName() + " balance. " +
+                    "You have " + balance.getRemainingDays() + " days remaining but requested " + requestedDays + " days.");
         }
 
+        // ── SAVE ────────────────────────────────────────────────────────────────
         LeaveRequest request = new LeaveRequest();
         request.setEmployee(employee);
         request.setLeaveType(type);
@@ -216,14 +207,16 @@ public class LeaveService {
 
         LeaveRequest saved = leaveRequestRepository.save(request);
 
-        // Notify Admin
         sendNotification("/topic/admin/leaves", "New Leave Request",
                 employee.getFirstName() + " applied for " + type.getName() + " (" + requestedDays + " days)");
 
         return saved;
     }
 
-    // --- Admin Actions ---
+    // ─────────────────────────────────────────────────────────────────────────────
+    // ADMIN ACTIONS
+    // ─────────────────────────────────────────────────────────────────────────────
+
     public List<LeaveRequest> getAllLeaveRequests() {
         return leaveRequestRepository.findAllByOrderByCreatedAtDesc();
     }
@@ -238,18 +231,22 @@ public class LeaveService {
                 .orElseThrow(() -> new RuntimeException("Leave request not found"));
 
         if (request.getStatus() != LeaveRequest.LeaveStatus.PENDING) {
-            throw new RuntimeException("Only pending requests can be approved");
+            throw new RuntimeException("Only PENDING requests can be approved.");
         }
 
-        // Deduct balance
-        double daysToDeduct = calculateLeaveDays(request.getFromDate(), request.getToDate(), request.getSessionFrom(),
-                request.getSessionTo());
+        double daysToDeduct = calculateLeaveDays(request.getFromDate(), request.getToDate(),
+                request.getSessionFrom(), request.getSessionTo());
+
+        // Re-validate balance at approval time (may have changed since application)
         LeaveBalance balance = leaveBalanceRepository
                 .findByEmployeeAndLeaveType(request.getEmployee(), request.getLeaveType())
-                .orElseThrow(() -> new RuntimeException("Balance record missing"));
+                .orElseThrow(() -> new RuntimeException("Leave balance record not found."));
 
         if (balance.getRemainingDays() < daysToDeduct) {
-            throw new RuntimeException("Employee does not have enough balance to approve this leave");
+            throw new RuntimeException(
+                    "Employee does not have enough " + request.getLeaveType().getName() +
+                    " balance to approve this leave. Available: " + balance.getRemainingDays() +
+                    " days, Required: " + daysToDeduct + " days.");
         }
 
         balance.setUsedDays(balance.getUsedDays() + daysToDeduct);
@@ -260,11 +257,11 @@ public class LeaveService {
         request.setApprovedBy(admin);
         LeaveRequest saved = leaveRequestRepository.save(request);
 
-        // Notify Employee
-        // Using a broadcast since users don't have dedicated user queues right now,
-        // frontend can filter by employeeId if needed, or simply send to a common topic
+        // Sync attendance
+        handleLeaveAttendanceIntegration(saved, admin);
+
         sendNotification("/topic/reminders", "Leave Approved",
-                "Your leave request for " + request.getLeaveType().getName() + " has been approved.");
+                "Your " + request.getLeaveType().getName() + " request has been approved.");
 
         return saved;
     }
@@ -275,51 +272,342 @@ public class LeaveService {
                 .orElseThrow(() -> new RuntimeException("Leave request not found"));
 
         if (request.getStatus() != LeaveRequest.LeaveStatus.PENDING) {
-            throw new RuntimeException("Only pending requests can be rejected");
+            throw new RuntimeException("Only PENDING requests can be rejected.");
         }
 
         request.setStatus(LeaveRequest.LeaveStatus.REJECTED);
         request.setApprovedBy(admin);
         LeaveRequest saved = leaveRequestRepository.save(request);
 
-        // Notify Employee
+        // Rejection: attendance should NOT have been mutated for a pending request
+        // (check-in gating only applies to APPROVED leaves, not pending).
+        // Log the rejection action for audit trail.
+        String adminName = admin != null ? admin.getUsername() : "admin";
+        LocalDate d = request.getFromDate();
+        while (!d.isAfter(request.getToDate())) {
+            Optional<AttendanceRecord> rec = attendanceRepository.findByUserAndDate(request.getEmployee(), d);
+            AttendanceAuditLog auditEntry = new AttendanceAuditLog();
+            auditEntry.setUser(request.getEmployee());
+            auditEntry.setAttendanceDate(d);
+            auditEntry.setLeaveRequestId(requestId);
+            auditEntry.setAction(AttendanceAuditLog.AuditAction.LEAVE_REJECTED);
+            auditEntry.setPreviousStatus(rec.map(AttendanceRecord::getStatus).orElse(null));
+            auditEntry.setNewStatus(rec.map(AttendanceRecord::getStatus).orElse(null));
+            auditEntry.setMutatedBy(adminName);
+            auditLogRepository.save(auditEntry);
+            d = d.plusDays(1);
+        }
+
         sendNotification("/topic/reminders", "Leave Rejected",
-                "Your leave request for " + request.getLeaveType().getName() + " was rejected.");
+                "Your " + request.getLeaveType().getName() + " request was rejected.");
 
         return saved;
     }
 
-    // --- Helpers ---
-    private double calculateLeaveDays(java.time.LocalDate fromDate, java.time.LocalDate toDate,
+    @Transactional
+    public LeaveRequest cancelLeave(Long requestId, User requester) {
+        LeaveRequest request = leaveRequestRepository.findById(requestId)
+                .orElseThrow(() -> new RuntimeException("Leave request not found"));
+
+        if (request.getStatus() == LeaveRequest.LeaveStatus.CANCELLED) {
+            throw new RuntimeException("Leave request is already cancelled.");
+        }
+
+        // Allow cancellation of PENDING and APPROVED requests
+        boolean wasApproved = request.getStatus() == LeaveRequest.LeaveStatus.APPROVED;
+
+        if (wasApproved) {
+            // Restore balance
+            double daysToRestore = calculateLeaveDays(request.getFromDate(), request.getToDate(),
+                    request.getSessionFrom(), request.getSessionTo());
+            leaveBalanceRepository.findByEmployeeAndLeaveType(request.getEmployee(), request.getLeaveType())
+                    .ifPresent(balance -> {
+                        balance.setUsedDays(Math.max(0, balance.getUsedDays() - daysToRestore));
+                        balance.setRemainingDays(balance.getRemainingDays() + daysToRestore);
+                        leaveBalanceRepository.save(balance);
+                    });
+
+            // Revert attendance mutations caused by this leave approval
+            revertAttendanceMutations(requestId, requester);
+        }
+
+        request.setStatus(LeaveRequest.LeaveStatus.CANCELLED);
+        LeaveRequest saved = leaveRequestRepository.save(request);
+
+        sendNotification("/topic/reminders", "Leave Cancelled",
+                "Your " + request.getLeaveType().getName() + " leave has been cancelled.");
+
+        return saved;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────
+    // PRIVATE HELPERS
+    // ─────────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Core logic: syncs attendance records when a leave is approved.
+     * Handles full-day, first-half (SESSION_1), second-half (SESSION_2), and retroactive scenarios.
+     */
+    private void handleLeaveAttendanceIntegration(LeaveRequest request, User admin) {
+        User employee = request.getEmployee();
+        LocalTime secondHalfStart = ShiftUtils.getSecondHalfStart(employee, shiftConfig);
+        String adminName = admin != null ? admin.getUsername() : "system";
+        String leaveCode = leaveTypeCode(request.getLeaveType().getName());
+
+        for (LocalDate date = request.getFromDate(); !date.isAfter(request.getToDate()); date = date.plusDays(1)) {
+
+            boolean isFullDay = ShiftUtils.isFullDayLeave(request, date);
+            boolean isSession2 = ShiftUtils.isSecondHalfLeave(request, date);
+            boolean isSession1 = ShiftUtils.isFirstHalfLeave(request, date);
+
+            Optional<AttendanceRecord> optRecord = attendanceRepository.findByUserAndDate(employee, date);
+            AttendanceRecord record = optRecord.orElse(null);
+
+            // Capture before-state for audit
+            String prevStatus = record != null ? record.getStatus() : null;
+            LocalTime prevCheckOut = record != null ? record.getCheckOutTime() : null;
+            boolean recordCreated = false;
+
+            if (isFullDay) {
+                // ── FULL DAY LEAVE ────────────────────────────────────────────────────
+                if (record == null) {
+                    // No attendance record: create one with leave status
+                    record = new AttendanceRecord();
+                    record.setUser(employee);
+                    record.setDate(date);
+                    record.setStatus(leaveCode);
+                    record.setLeaveNote("Full-day " + leaveCode + " (retroactive)");
+                    recordCreated = true;
+                } else if ("Present".equalsIgnoreCase(record.getStatus())) {
+                    // Date already has a fully-worked present record — do NOT overwrite
+                    // Log and skip
+                    writeAuditLog(employee, date, request.getId(), AttendanceAuditLog.AuditAction.LEAVE_APPROVED,
+                            prevStatus, prevCheckOut, prevStatus, prevCheckOut, false, adminName,
+                            "Skipped: date already Present, not overwritten by " + leaveCode);
+                    continue;
+                } else {
+                    // Absent or other non-present status: convert to leave
+                    record.setStatus(leaveCode);
+                    record.setLeaveNote("Full-day " + leaveCode);
+                }
+                attendanceRepository.save(record);
+
+            } else if (isSession2) {
+                // ── SECOND HALF LEAVE ─────────────────────────────────────────────────
+                if (record != null && record.getCheckInTime() != null) {
+                    LocalTime checkIn = record.getCheckInTime();
+
+                    // Section 9: if check-in is >= secondHalfStart, reject the approval for this day
+                    if (ShiftUtils.isCheckedInDuringSecondHalf(checkIn, secondHalfStart)) {
+                        // This should have been caught at application time, but guard at approval too
+                        throw new RuntimeException(
+                                "Cannot approve second-half leave for " + date +
+                                ": employee already checked in during the second half (at " + checkIn + ").");
+                    }
+
+                    // Checked in during first half — apply auto-checkout at second-half start
+                    if (record.getCheckOutTime() == null) {
+                        // No checkout yet: set to second-half start (auto-checkout)
+                        record.setCheckOutTime(secondHalfStart);
+                        record.setLeaveNote("SESSION_2 " + leaveCode + " auto-checkout at " + secondHalfStart);
+                    } else {
+                        // Existing checkout: if checkout is AFTER secondHalfStart, cap it
+                        // If checkout is BEFORE secondHalfStart, preserve it (employee left early)
+                        if (record.getCheckOutTime().isAfter(secondHalfStart)) {
+                            record.setCheckOutTime(secondHalfStart);
+                            record.setLeaveNote("SESSION_2 " + leaveCode + " checkout capped to " + secondHalfStart);
+                        } else {
+                            record.setLeaveNote("SESSION_2 " + leaveCode + " (early manual checkout preserved)");
+                        }
+                    }
+                    record.setStatus("Half Day Present");
+                } else if (record == null) {
+                    // No attendance record at all for this date — create a half-day leave record
+                    record = new AttendanceRecord();
+                    record.setUser(employee);
+                    record.setDate(date);
+                    record.setStatus("Half Day Present");
+                    record.setLeaveNote("SESSION_2 " + leaveCode + " (no check-in)");
+                    recordCreated = true;
+                }
+                // If record exists but no checkInTime, just update status
+                if (record != null && record.getCheckInTime() == null && !recordCreated) {
+                    record.setStatus("Half Day Present");
+                    record.setLeaveNote("SESSION_2 " + leaveCode);
+                }
+                if (record != null) {
+                    attendanceRepository.save(record);
+                }
+
+            } else if (isSession1) {
+                // ── FIRST HALF LEAVE ──────────────────────────────────────────────────
+                if (record != null && record.getCheckInTime() != null) {
+                    LocalTime checkIn = record.getCheckInTime();
+                    if (!ShiftUtils.isCheckedInDuringSecondHalf(checkIn, secondHalfStart)) {
+                        // Checked in during first half — apply auto-checkout at second-half start
+                        if (record.getCheckOutTime() == null) {
+                            record.setCheckOutTime(secondHalfStart);
+                            record.setFirstCheckOutTime(secondHalfStart);
+                            record.setLeaveNote("SESSION_1 " + leaveCode + " auto-checkout at " + secondHalfStart);
+                        } else {
+                            if (record.getCheckOutTime().isAfter(secondHalfStart)) {
+                                record.setCheckOutTime(secondHalfStart);
+                                record.setFirstCheckOutTime(secondHalfStart);
+                                record.setLeaveNote("SESSION_1 " + leaveCode + " checkout capped to " + secondHalfStart);
+                            } else {
+                                record.setFirstCheckOutTime(record.getCheckOutTime());
+                                record.setLeaveNote("SESSION_1 " + leaveCode + " (early manual checkout preserved)");
+                            }
+                        }
+                    } else {
+                        // Checked in during second half (normal second-half work after morning leave)
+                        record.setLeaveNote("SESSION_1 " + leaveCode + " (second-half work at " + checkIn + ")");
+                    }
+                    record.setStatus("Half Day Present");
+                } else if (record == null) {
+                    // No check-in: create half-day attendance record
+                    record = new AttendanceRecord();
+                    record.setUser(employee);
+                    record.setDate(date);
+                    record.setStatus("Half Day Present");
+                    record.setLeaveNote("SESSION_1 " + leaveCode + " (no check-in)");
+                    recordCreated = true;
+                } else {
+                    // Record exists but no check-in
+                    record.setStatus("Half Day Present");
+                    record.setLeaveNote("SESSION_1 " + leaveCode);
+                }
+                if (record != null) {
+                    attendanceRepository.save(record);
+                }
+            }
+
+            // Write audit log
+            String afterStatus = record != null ? record.getStatus() : null;
+            LocalTime afterCheckOut = record != null ? record.getCheckOutTime() : null;
+            writeAuditLog(employee, date, request.getId(), AttendanceAuditLog.AuditAction.LEAVE_APPROVED,
+                    prevStatus, prevCheckOut, afterStatus, afterCheckOut, recordCreated, adminName, null);
+        }
+    }
+
+    /**
+     * Reverts all attendance mutations caused by the given leave request.
+     * Used when an approved leave is cancelled.
+     */
+    private void revertAttendanceMutations(Long requestId, User requester) {
+        List<AttendanceAuditLog> auditEntries =
+                auditLogRepository.findByLeaveRequestIdOrderByMutatedAtDesc(requestId);
+
+        String requesterName = requester != null ? requester.getUsername() : "system";
+
+        for (AttendanceAuditLog entry : auditEntries) {
+            if (entry.getAction() != AttendanceAuditLog.AuditAction.LEAVE_APPROVED) continue;
+
+            Optional<AttendanceRecord> optRecord =
+                    attendanceRepository.findByUserAndDate(entry.getUser(), entry.getAttendanceDate());
+
+            if (entry.isAttendanceRecordCreated()) {
+                // Record was created by the leave approval — delete it on cancel
+                optRecord.ifPresent(r -> attendanceRepository.delete(r));
+            } else {
+                // Record was modified — restore previous state
+                optRecord.ifPresent(record -> {
+                    record.setStatus(entry.getPreviousStatus());
+                    record.setCheckOutTime(entry.getPreviousCheckOutTime());
+                    record.setLeaveNote(null);
+                    attendanceRepository.save(record);
+                });
+            }
+
+            // Write revert audit entry
+            writeAuditLog(entry.getUser(), entry.getAttendanceDate(), requestId,
+                    AttendanceAuditLog.AuditAction.LEAVE_APPROVAL_REVERTED,
+                    entry.getNewStatus(), entry.getNewCheckOutTime(),
+                    entry.getPreviousStatus(), entry.getPreviousCheckOutTime(),
+                    false, requesterName, "Leave cancelled");
+        }
+    }
+
+    private void writeAuditLog(User user, LocalDate date, Long leaveRequestId,
+                                AttendanceAuditLog.AuditAction action,
+                                String prevStatus, LocalTime prevCheckOut,
+                                String newStatus, LocalTime newCheckOut,
+                                boolean created, String mutatedBy, String note) {
+        AttendanceAuditLog entry = new AttendanceAuditLog();
+        entry.setUser(user);
+        entry.setAttendanceDate(date);
+        entry.setLeaveRequestId(leaveRequestId);
+        entry.setAction(action);
+        entry.setPreviousStatus(prevStatus);
+        entry.setPreviousCheckOutTime(prevCheckOut);
+        entry.setNewStatus(newStatus);
+        entry.setNewCheckOutTime(newCheckOut);
+        entry.setAttendanceRecordCreated(created);
+        entry.setMutatedBy(mutatedBy);
+        auditLogRepository.save(entry);
+    }
+
+    /**
+     * Validates no overlapping leave requests (including half-day same-date awareness).
+     */
+    private void validateNoOverlap(User employee, LeaveRequestDto dto) {
+        long overlapping = leaveRequestRepository.countOverlappingLeaves(
+                employee, dto.getFromDate(), dto.getToDate());
+        if (overlapping > 0) {
+            // For a single-day half-day request, check if the overlap is only on the other half
+            if (dto.getFromDate().equals(dto.getToDate())
+                    && dto.getSessionFrom() != LeaveRequest.LeaveSession.FULL_DAY) {
+                // Check for existing half-day request on the same half for this date
+                List<LeaveRequest> existing = leaveRequestRepository.findApprovedOrPendingForDate(
+                        employee, dto.getFromDate());
+                for (LeaveRequest ex : existing) {
+                    if (ex.getFromDate().equals(dto.getFromDate()) && ex.getToDate().equals(dto.getFromDate())) {
+                        if (ex.getSessionFrom() == LeaveRequest.LeaveSession.FULL_DAY) {
+                            throw new RuntimeException(
+                                    "You already have a full-day leave applied for " + dto.getFromDate() + ".");
+                        }
+                        if (ex.getSessionFrom() == dto.getSessionFrom()) {
+                            throw new RuntimeException(
+                                    "You already have a " + sessionLabel(dto.getSessionFrom()) +
+                                    " leave applied for " + dto.getFromDate() + ".");
+                        }
+                        // Different halves (SESSION_1 + SESSION_2) on same date — reject (would make full day)
+                        throw new RuntimeException(
+                                "You already have a leave applied for a portion of " + dto.getFromDate() + ". " +
+                                "Combining two half-day leaves on the same date is not allowed.");
+                    } else {
+                        throw new RuntimeException(
+                                "You already have a leave applied on dates overlapping with " +
+                                dto.getFromDate() + " to " + dto.getToDate() + ".");
+                    }
+                }
+            } else {
+                throw new RuntimeException(
+                        "You already have a leave applied on dates overlapping with " +
+                        dto.getFromDate() + " to " + dto.getToDate() + ".");
+            }
+        }
+    }
+
+    private String sessionLabel(LeaveRequest.LeaveSession session) {
+        return switch (session) {
+            case SESSION_1 -> "first-half";
+            case SESSION_2 -> "second-half";
+            default -> "full-day";
+        };
+    }
+
+    public double calculateLeaveDays(java.time.LocalDate fromDate, java.time.LocalDate toDate,
             LeaveRequest.LeaveSession sessionFrom, LeaveRequest.LeaveSession sessionTo) {
         long daysBetween = ChronoUnit.DAYS.between(fromDate, toDate) + 1;
-        if (daysBetween <= 0)
-            return 0;
-
-        double days = daysBetween;
+        if (daysBetween <= 0) return 0;
 
         if (daysBetween == 1) {
-            // For a single day leave, sessionFrom dictates the day's total duration.
-            if (sessionFrom != LeaveRequest.LeaveSession.FULL_DAY) {
-                return 0.5;
-            } else {
-                return 1.0;
-            }
+            return sessionFrom != LeaveRequest.LeaveSession.FULL_DAY ? 0.5 : 1.0;
         } else {
-            // Multi-day leave: deduct 0.5 for each end that is a half-day session
-            if (sessionFrom == LeaveRequest.LeaveSession.SESSION_2) {
-                days -= 0.5; // Started late (Second Half), deduct morning
-            } else if (sessionFrom == LeaveRequest.LeaveSession.SESSION_1) {
-                // Starting First Half means they take the whole day, no deduction needed for
-                // Start Day
-            }
-
-            if (sessionTo == LeaveRequest.LeaveSession.SESSION_1) {
-                days -= 0.5; // Ended early (First Half), deduct afternoon
-            } else if (sessionTo == LeaveRequest.LeaveSession.SESSION_2) {
-                // Ending Second Half means they take the whole day, no deduction needed for End
-                // Day
-            }
+            double days = daysBetween;
+            if (sessionFrom == LeaveRequest.LeaveSession.SESSION_2) days -= 0.5;
+            if (sessionTo == LeaveRequest.LeaveSession.SESSION_1) days -= 0.5;
             return days;
         }
     }
@@ -332,5 +620,27 @@ public class LeaveService {
         notification.put("time",
                 java.time.LocalTime.now().format(java.time.format.DateTimeFormatter.ofPattern("h:mm a")));
         messagingTemplate.convertAndSend(topic, notification);
+    }
+
+    // ── Leave type helpers ───────────────────────────────────────────────────────
+
+    public static boolean isSickLeave(String typeName) {
+        return typeName.contains("sick") || typeName.equals("sl");
+    }
+
+    public static boolean isCasualLeave(String typeName) {
+        return typeName.contains("casual") || typeName.equals("cl");
+    }
+
+    public static boolean isPrivilegeLeave(String typeName) {
+        return typeName.contains("privilege") || typeName.contains("paid") || typeName.equals("pl");
+    }
+
+    private String leaveTypeCode(String leaveTypeName) {
+        String lower = leaveTypeName.toLowerCase();
+        if (isSickLeave(lower)) return "SL";
+        if (isCasualLeave(lower)) return "CL";
+        if (isPrivilegeLeave(lower)) return "PL";
+        return "L";
     }
 }

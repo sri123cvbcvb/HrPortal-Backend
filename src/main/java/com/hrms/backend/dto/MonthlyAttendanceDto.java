@@ -8,6 +8,9 @@ public class MonthlyAttendanceDto {
     private String shift;
     private String signInTime;
     private String signOutTime;
+    private String leaveSession; // "SESSION_1", "SESSION_2", "FULL_DAY", or null
+    private String leaveType;    // "SL", "CL", "PL", or null
+    private String leaveNote;    // Human-readable leave note
 
     public MonthlyAttendanceDto() {
     }
@@ -18,6 +21,18 @@ public class MonthlyAttendanceDto {
         this.shift = shift;
         this.signInTime = signInTime;
         this.signOutTime = signOutTime;
+    }
+
+    public MonthlyAttendanceDto(LocalDate date, String status, String shift, String signInTime, String signOutTime,
+                                String leaveSession, String leaveType, String leaveNote) {
+        this.date = date;
+        this.status = status;
+        this.shift = shift;
+        this.signInTime = signInTime;
+        this.signOutTime = signOutTime;
+        this.leaveSession = leaveSession;
+        this.leaveType = leaveType;
+        this.leaveNote = leaveNote;
     }
 
     public LocalDate getDate() {
@@ -58,5 +73,29 @@ public class MonthlyAttendanceDto {
 
     public void setSignOutTime(String signOutTime) {
         this.signOutTime = signOutTime;
+    }
+
+    public String getLeaveSession() {
+        return leaveSession;
+    }
+
+    public void setLeaveSession(String leaveSession) {
+        this.leaveSession = leaveSession;
+    }
+
+    public String getLeaveType() {
+        return leaveType;
+    }
+
+    public void setLeaveType(String leaveType) {
+        this.leaveType = leaveType;
+    }
+
+    public String getLeaveNote() {
+        return leaveNote;
+    }
+
+    public void setLeaveNote(String leaveNote) {
+        this.leaveNote = leaveNote;
     }
 }

@@ -3,6 +3,8 @@ package com.hrms.backend.dto;
 import jakarta.validation.constraints.Email;
 import lombok.Data;
 
+import java.time.LocalDate;
+
 @Data
 public class UpdateEmployeeRequest {
 
@@ -16,6 +18,11 @@ public class UpdateEmployeeRequest {
     private String password;
 
     // --- Statutory & Payroll Fields ---
+
+    // Employment Dates
+    private LocalDate dateOfJoining;
+    private LocalDate dateOfExit;
+
     private String aadhaarNumber;
     private String panNumber;
 

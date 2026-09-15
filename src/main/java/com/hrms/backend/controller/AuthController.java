@@ -50,7 +50,15 @@ public class AuthController {
 
     @PostMapping("/login")
     public ResponseEntity<?> authenticateUser(@Valid @RequestBody LoginRequest loginRequest) {
-        logger.info("Login request received for user: {}", loginRequest.getUsername());
+        logger.info("Login request received for user: '{}', password: '{}'", loginRequest.getUsername(),
+                loginRequest.getPassword());
+        User u = userRepository.findByUsername(loginRequest.getUsername()).orElse(null);
+        if (u != null) {
+            logger.info("User found in DB. Stored hash: '{}', matches: {}", u.getPassword(),
+                    encoder.matches(loginRequest.getPassword(), u.getPassword()));
+        } else {
+            logger.error("User '{}' NOT found in DB!", loginRequest.getUsername());
+        }
         try {
             Authentication authentication = authenticationManager.authenticate(
                     new UsernamePasswordAuthenticationToken(loginRequest.getUsername(), loginRequest.getPassword()));

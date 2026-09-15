@@ -5,6 +5,7 @@ import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.time.LocalDate;
 import java.util.HashSet;
 import java.util.Set;
 
@@ -30,6 +31,10 @@ public class User {
 
     // --- Statutory & Payroll Fields ---
     
+    // Employment Dates
+    private LocalDate dateOfJoining;
+    private LocalDate dateOfExit;
+
     // Personal Identification
     private String aadhaarNumber;
     private String panNumber;
@@ -50,6 +55,18 @@ public class User {
     private Double basicPercentage;
     private Double hraPercentage;
     private Double specialAllowancePercentage;
+
+    // Shift Timings (optional override per employee)
+    private java.time.LocalTime shiftStartTime;
+    private java.time.LocalTime shiftEndTime;
+    private java.time.LocalTime secondHalfStartTime;
+
+    public java.time.LocalTime getEffectiveSecondHalfStartTime(com.hrms.backend.config.ShiftConfig shiftConfig) {
+        if (this.secondHalfStartTime != null) {
+            return this.secondHalfStartTime;
+        }
+        return shiftConfig != null ? shiftConfig.getSecondHalfStartTime() : java.time.LocalTime.of(13, 0);
+    }
 
     @ManyToMany(fetch = FetchType.EAGER)
     @JoinTable(name = "user_roles",

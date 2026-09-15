@@ -21,6 +21,7 @@ public class DataLoader {
     private String adminDefaultPassword;
 
     @Bean
+    @org.springframework.transaction.annotation.Transactional
     CommandLineRunner initDatabase(RoleRepository roleRepository, UserRepository userRepository,
             PasswordEncoder encoder) {
         return args -> {
@@ -32,13 +33,26 @@ public class DataLoader {
 
             // Seed default admin if not present
             if (!userRepository.existsByUsername("admin")) {
-                User admin = new User("Admin", "User", "admin", "admin@hrms.com", encoder.encode(adminDefaultPassword));
+                User admin = new User("Admin", "User", "admin", "admin@hrms.com",
+                        encoder.encode(adminDefaultPassword.trim()));
                 Set<Role> roles = new HashSet<>();
                 Role adminRole = roleRepository.findByName(RoleName.ROLE_ADMIN)
                         .orElseThrow(() -> new RuntimeException("Error: Role is not found."));
                 roles.add(adminRole);
                 admin.setRoles(roles);
-                userRepository.save(admin);
+                userRepository.saveAndFlush(admin);
+            } else {
+                userRepository.findByUsername("admin").ifPresent(admin -> {
+                    admin.setPassword(encoder.encode(adminDefaultPassword.trim()));
+                    if (admin.getRoles() == null || admin.getRoles().isEmpty()) {
+                        Role adminRole = roleRepository.findByName(RoleName.ROLE_ADMIN)
+                                .orElseThrow(() -> new RuntimeException("Error: Role is not found."));
+                        Set<Role> roles = new HashSet<>();
+                        roles.add(adminRole);
+                        admin.setRoles(roles);
+                    }
+                    userRepository.saveAndFlush(admin);
+                });
             }
         };
     }
