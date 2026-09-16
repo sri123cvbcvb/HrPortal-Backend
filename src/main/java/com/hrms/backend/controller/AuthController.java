@@ -1,5 +1,10 @@
 package com.hrms.backend.controller;
 
+import com.google.api.client.googleapis.auth.oauth2.GoogleIdToken;
+import com.google.api.client.googleapis.auth.oauth2.GoogleIdTokenVerifier;
+import com.google.api.client.http.javanet.NetHttpTransport;
+import com.google.api.client.json.gson.GsonFactory;
+import com.hrms.backend.dto.GoogleLoginRequest;
 import com.hrms.backend.dto.JwtResponse;
 import com.hrms.backend.dto.LoginRequest;
 import com.hrms.backend.dto.MessageResponse;
@@ -12,6 +17,7 @@ import com.hrms.backend.repository.UserRepository;
 import com.hrms.backend.security.JwtUtils;
 import com.hrms.backend.security.UserDetailsImpl;
 import jakarta.validation.Valid;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
@@ -23,6 +29,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -38,6 +45,9 @@ public class AuthController {
     private final RoleRepository roleRepository;
     private final PasswordEncoder encoder;
     private final JwtUtils jwtUtils;
+
+    @Value("${google.client.id}")
+    private String googleClientId;
 
     public AuthController(AuthenticationManager authenticationManager, UserRepository userRepository,
             RoleRepository roleRepository, PasswordEncoder encoder, JwtUtils jwtUtils) {
@@ -83,6 +93,61 @@ public class AuthController {
         } catch (Exception e) {
             logger.error("Authentication error for user {}: {}", loginRequest.getUsername(), e.getMessage());
             throw e;
+        }
+    }
+
+    @PostMapping("/google")
+    public ResponseEntity<?> authenticateGoogleUser(@Valid @RequestBody GoogleLoginRequest googleLoginRequest) {
+        logger.info("Google OAuth2 login attempt received");
+        try {
+            GoogleIdTokenVerifier verifier = new GoogleIdTokenVerifier.Builder(new NetHttpTransport(), GsonFactory.getDefaultInstance())
+                    .setAudience(Collections.singletonList(googleClientId))
+                    .build();
+
+            GoogleIdToken idToken = verifier.verify(googleLoginRequest.getToken());
+            if (idToken == null) {
+                logger.error("Invalid Google ID Token received");
+                return ResponseEntity.badRequest().body(new MessageResponse("Error: Invalid or expired Google token"));
+            }
+
+            GoogleIdToken.Payload payload = idToken.getPayload();
+            String email = payload.getEmail();
+            Boolean emailVerified = payload.getEmailVerified();
+
+            if (email == null || (emailVerified != null && !emailVerified)) {
+                return ResponseEntity.badRequest().body(new MessageResponse("Error: Google email is not verified"));
+            }
+
+            logger.info("Google OAuth2 verified email: {}", email);
+
+            // User must already exist in database (added by admin)
+            User user = userRepository.findByEmail(email).orElse(null);
+            if (user == null) {
+                logger.warn("Google login rejected: No user registered with email '{}'", email);
+                return ResponseEntity.badRequest().body(new MessageResponse(
+                        "No employee account found with email: " + email + ". Please contact your administrator."));
+            }
+
+            // Build user details and authenticate
+            UserDetailsImpl userDetails = UserDetailsImpl.build(user);
+            Authentication authentication = new UsernamePasswordAuthenticationToken(
+                    userDetails, null, userDetails.getAuthorities());
+            SecurityContextHolder.getContext().setAuthentication(authentication);
+
+            String jwt = jwtUtils.generateJwtToken(authentication);
+            List<String> roles = userDetails.getAuthorities().stream()
+                    .map(item -> item.getAuthority())
+                    .collect(Collectors.toList());
+
+            logger.info("Google login successful for user: {} (email: {})", user.getUsername(), email);
+            return ResponseEntity.ok(new JwtResponse(jwt,
+                    user.getId(),
+                    user.getUsername(),
+                    user.getEmail(),
+                    roles));
+        } catch (Exception e) {
+            logger.error("Error verifying Google OAuth token: {}", e.getMessage(), e);
+            return ResponseEntity.badRequest().body(new MessageResponse("Google authentication failed: " + e.getMessage()));
         }
     }
 
