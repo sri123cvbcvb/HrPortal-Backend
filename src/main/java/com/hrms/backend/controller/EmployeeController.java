@@ -57,4 +57,38 @@ public class EmployeeController {
                 .collect(Collectors.toList());
         return ResponseEntity.ok(upcoming);
     }
+
+    @GetMapping("/profile")
+    public ResponseEntity<com.hrms.backend.dto.EmployeeProfileDto> getMyProfile() {
+        User user = getCurrentUser();
+        List<String> roles = user.getRoles() != null
+                ? user.getRoles().stream().map(r -> r.getName().name()).collect(Collectors.toList())
+                : List.of();
+
+        com.hrms.backend.dto.EmployeeProfileDto dto = com.hrms.backend.dto.EmployeeProfileDto.builder()
+                .id(user.getId())
+                .firstName(user.getFirstName())
+                .lastName(user.getLastName())
+                .username(user.getUsername())
+                .email(user.getEmail())
+                .dateOfJoining(user.getDateOfJoining())
+                .dateOfExit(user.getDateOfExit())
+                .aadhaarNumber(user.getAadhaarNumber())
+                .panNumber(user.getPanNumber())
+                .pfApplicable(user.getPfApplicable())
+                .pfUan(user.getPfUan())
+                .pfAccount(user.getPfAccount())
+                .bankName(user.getBankName())
+                .bankAccountNumber(user.getBankAccountNumber())
+                .ifscCode(user.getIfscCode())
+                .accountHolderName(user.getAccountHolderName())
+                .annualCtc(user.getAnnualCtc())
+                .basicPercentage(user.getBasicPercentage())
+                .hraPercentage(user.getHraPercentage())
+                .specialAllowancePercentage(user.getSpecialAllowancePercentage())
+                .roles(roles)
+                .build();
+
+        return ResponseEntity.ok(dto);
+    }
 }
