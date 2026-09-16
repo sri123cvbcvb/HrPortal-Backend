@@ -65,6 +65,23 @@ public class PayrollService {
             return false;
         }
 
+        // Employment date validations:
+        // Skip if employee joined AFTER this month
+        LocalDate monthStart = LocalDate.of(year, month, 1);
+        LocalDate monthEnd = monthStart.plusMonths(1).minusDays(1);
+        if (employee.getDateOfJoining() != null && employee.getDateOfJoining().isAfter(monthEnd)) {
+            logger.debug("Skipping payslip for user {}: joined on {} after {}/{}",
+                    employee.getUsername(), employee.getDateOfJoining(), month, year);
+            return false;
+        }
+
+        // Skip if employee exited BEFORE this month
+        if (employee.getDateOfExit() != null && employee.getDateOfExit().isBefore(monthStart)) {
+            logger.debug("Skipping payslip for user {}: exited on {} before {}/{}",
+                    employee.getUsername(), employee.getDateOfExit(), month, year);
+            return false;
+        }
+
         // 1. Fetch Attendance Summary to get working days and LOP days
         AttendanceSummaryDto attendance = attendanceService.getMonthlySummary(employee, year, month);
         int totalWorkingDays = attendance.getTotalDays();
@@ -185,5 +202,9 @@ public class PayrollService {
     
     public List<Payslip> getPayslipsForUser(User user) {
         return payslipRepository.findByUserOrderByYearDescMonthDesc(user);
+    }
+
+    public Optional<Payslip> getPayslipForUserAndMonth(User user, int month, int year) {
+        return payslipRepository.findByUserAndMonthAndYear(user, month, year);
     }
 }
