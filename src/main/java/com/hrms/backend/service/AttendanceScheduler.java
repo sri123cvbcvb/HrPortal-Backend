@@ -22,7 +22,7 @@ public class AttendanceScheduler {
     @Autowired
     private RabbitTemplate rabbitTemplate;
 
-    @Scheduled(cron = "${attendance.reminder.morning}")
+    @Scheduled(cron = "${attendance.reminder.morning}", zone = "Asia/Kolkata")
     public void sendMorningReminder() {
         logger.info("Morning Scheduler triggered at {}", LocalTime.now());
 
@@ -36,7 +36,7 @@ public class AttendanceScheduler {
         logger.info("Published morning attendance reminder to RabbitMQ");
     }
 
-    @Scheduled(cron = "${attendance.reminder.evening}")
+    @Scheduled(cron = "${attendance.reminder.evening}", zone = "Asia/Kolkata")
     public void sendEveningReminder() {
         logger.info("Evening Scheduler triggered at {}", LocalTime.now());
 
