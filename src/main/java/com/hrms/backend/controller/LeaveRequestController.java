@@ -1,6 +1,7 @@
 package com.hrms.backend.controller;
 
 import com.hrms.backend.dto.LeaveRequestDto;
+import com.hrms.backend.dto.MessageResponse;
 import com.hrms.backend.model.LeaveBalance;
 import com.hrms.backend.model.LeaveRequest;
 import com.hrms.backend.model.LeaveType;
@@ -48,12 +49,16 @@ public class LeaveRequestController {
     }
 
     @PostMapping("/apply")
-    public ResponseEntity<LeaveRequest> applyForLeave(@Valid @RequestBody LeaveRequestDto dto,
+    public ResponseEntity<?> applyForLeave(@Valid @RequestBody LeaveRequestDto dto,
             Authentication authentication) {
-        User employee = userRepository.findByUsername(authentication.getName())
-                .orElseThrow(() -> new RuntimeException("User not found"));
-        LeaveRequest request = leaveService.applyForLeave(employee, dto);
-        return ResponseEntity.ok(request);
+        try {
+            User employee = userRepository.findByUsername(authentication.getName())
+                    .orElseThrow(() -> new RuntimeException("User not found"));
+            LeaveRequest request = leaveService.applyForLeave(employee, dto);
+            return ResponseEntity.ok(request);
+        } catch (RuntimeException ex) {
+            return ResponseEntity.badRequest().body(new MessageResponse(ex.getMessage()));
+        }
     }
 
     /**

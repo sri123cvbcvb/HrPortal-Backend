@@ -1,5 +1,6 @@
 package com.hrms.backend.controller;
 
+import com.hrms.backend.dto.MessageResponse;
 import com.hrms.backend.model.LeaveBalance;
 import com.hrms.backend.model.LeaveRequest;
 import com.hrms.backend.model.LeaveType;
@@ -82,14 +83,22 @@ public class LeaveAdminController {
     }
 
     @PostMapping("/requests/{requestId}/approve")
-    public ResponseEntity<LeaveRequest> approveRequest(@PathVariable Long requestId, Authentication authentication) {
-        User admin = userRepository.findByUsername(authentication.getName()).orElse(null);
-        return ResponseEntity.ok(leaveService.approveLeave(requestId, admin));
+    public ResponseEntity<?> approveRequest(@PathVariable Long requestId, Authentication authentication) {
+        try {
+            User admin = userRepository.findByUsername(authentication.getName()).orElse(null);
+            return ResponseEntity.ok(leaveService.approveLeave(requestId, admin));
+        } catch (RuntimeException ex) {
+            return ResponseEntity.badRequest().body(new MessageResponse(ex.getMessage()));
+        }
     }
 
     @PostMapping("/requests/{requestId}/reject")
-    public ResponseEntity<LeaveRequest> rejectRequest(@PathVariable Long requestId, Authentication authentication) {
-        User admin = userRepository.findByUsername(authentication.getName()).orElse(null);
-        return ResponseEntity.ok(leaveService.rejectLeave(requestId, admin));
+    public ResponseEntity<?> rejectRequest(@PathVariable Long requestId, Authentication authentication) {
+        try {
+            User admin = userRepository.findByUsername(authentication.getName()).orElse(null);
+            return ResponseEntity.ok(leaveService.rejectLeave(requestId, admin));
+        } catch (RuntimeException ex) {
+            return ResponseEntity.badRequest().body(new MessageResponse(ex.getMessage()));
+        }
     }
 }

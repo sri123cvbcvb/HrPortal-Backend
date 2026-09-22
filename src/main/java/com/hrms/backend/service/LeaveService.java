@@ -142,10 +142,73 @@ public class LeaveService {
         }
         // PL: no date restriction — any past, current, or future date is allowed.
 
-        // ── D. SESSION TIME RESTRICTION ─────────────────────────────────────────
-        // If applying for today after second-half has started, only SESSION_2 is allowed
+        // ── D. ATTENDANCE PRESENCE CHECK ─────────────────────────────────────────
+        // Reject leave application if the employee was already marked Present or attended on any requested date
         LocalTime secondHalfStart = ShiftUtils.getSecondHalfStart(employee, shiftConfig);
 
+        for (LocalDate d = dto.getFromDate(); !d.isAfter(dto.getToDate()); d = d.plusDays(1)) {
+            Optional<AttendanceRecord> existingRecord = attendanceRepository.findByUserAndDate(employee, d);
+            if (existingRecord.isPresent()) {
+                AttendanceRecord record = existingRecord.get();
+                String status = record.getStatus();
+
+                // 1. Full-day "Present" check
+                if (status != null && status.equalsIgnoreCase("Present")) {
+                    if (d.isBefore(today)) {
+                        throw new RuntimeException(
+                                "Cannot apply leave for " + d + ": You were already marked Present on this day. " +
+                                "Leave cannot be applied for dates you have already attended.");
+                    } else if (d.equals(today)) {
+                        if (record.getCheckOutTime() != null) {
+                            throw new RuntimeException(
+                                    "Cannot apply leave for today (" + d + "): You have already completed attendance for today.");
+                        }
+                        if (dto.getSessionFrom() == LeaveRequest.LeaveSession.FULL_DAY
+                                || dto.getSessionFrom() == LeaveRequest.LeaveSession.SESSION_1) {
+                            throw new RuntimeException(
+                                    "Cannot apply full-day or first-half leave for today (" + d + "): " +
+                                    "You are already checked in and marked Present. Only Second Half leave may be applied if eligible.");
+                        }
+                    }
+                }
+
+                // 2. "Half Day Present" check
+                if (status != null && status.equalsIgnoreCase("Half Day Present")) {
+                    boolean isFullDayOnDate = (d.isAfter(dto.getFromDate()) && d.isBefore(dto.getToDate()))
+                            || (d.equals(dto.getFromDate()) && dto.getSessionFrom() == LeaveRequest.LeaveSession.FULL_DAY)
+                            || (d.equals(dto.getToDate()) && dto.getSessionTo() == LeaveRequest.LeaveSession.FULL_DAY);
+
+                    if (isFullDayOnDate) {
+                        throw new RuntimeException(
+                                "Cannot apply full-day leave for " + d + ": You were already marked Half Day Present on this day.");
+                    }
+
+                    if (record.getCheckInTime() != null) {
+                        boolean attendedSecondHalf = ShiftUtils.isCheckedInDuringSecondHalf(
+                                record.getCheckInTime(), secondHalfStart);
+
+                        if (!attendedSecondHalf) {
+                            // Attended first half
+                            if ((d.equals(dto.getFromDate()) && dto.getSessionFrom() == LeaveRequest.LeaveSession.SESSION_1)
+                                    || (d.equals(dto.getToDate()) && dto.getSessionTo() == LeaveRequest.LeaveSession.SESSION_1)) {
+                                throw new RuntimeException(
+                                        "Cannot apply first-half leave for " + d + ": You already attended the first half on this day.");
+                            }
+                        } else {
+                            // Attended second half
+                            if ((d.equals(dto.getFromDate()) && dto.getSessionFrom() == LeaveRequest.LeaveSession.SESSION_2)
+                                    || (d.equals(dto.getToDate()) && dto.getSessionTo() == LeaveRequest.LeaveSession.SESSION_2)) {
+                                throw new RuntimeException(
+                                        "Cannot apply second-half leave for " + d + ": You already attended the second half on this day.");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── E. SESSION TIME RESTRICTION ─────────────────────────────────────────
+        // If applying for today after second-half has started, only SESSION_2 is allowed
         if (dto.getFromDate().equals(today) && LocalTime.now().isAfter(secondHalfStart)) {
             if (dto.getSessionFrom() == LeaveRequest.LeaveSession.FULL_DAY ||
                     dto.getSessionFrom() == LeaveRequest.LeaveSession.SESSION_1) {
@@ -163,7 +226,7 @@ public class LeaveService {
             }
         }
 
-        // ── E. SECTION 9: Reject SESSION_2 leave if already checked in during 2nd half ──
+        // ── F. SECTION 9: Reject SESSION_2 leave if already checked in during 2nd half ──
         // Only applicable for single-day SESSION_2 requests for today or past dates
         if (dto.getSessionFrom() == LeaveRequest.LeaveSession.SESSION_2
                 && dto.getFromDate().equals(dto.getToDate())) {
@@ -179,7 +242,7 @@ public class LeaveService {
             }
         }
 
-        // ── F. OVERLAP CHECK ────────────────────────────────────────────────────
+        // ── G. OVERLAP CHECK ────────────────────────────────────────────────────
         // Enhanced: also check half-day session overlap on same date
         validateNoOverlap(employee, dto);
 
@@ -232,6 +295,22 @@ public class LeaveService {
 
         if (request.getStatus() != LeaveRequest.LeaveStatus.PENDING) {
             throw new RuntimeException("Only PENDING requests can be approved.");
+        }
+
+        // Validate that the employee was not marked "Present" on any date in the request
+        LocalDate today = LocalDate.now();
+        for (LocalDate d = request.getFromDate(); !d.isAfter(request.getToDate()); d = d.plusDays(1)) {
+            Optional<AttendanceRecord> optRecord = attendanceRepository.findByUserAndDate(request.getEmployee(), d);
+            if (optRecord.isPresent()) {
+                AttendanceRecord rec = optRecord.get();
+                if (rec.getStatus() != null && rec.getStatus().equalsIgnoreCase("Present")) {
+                    if (d.isBefore(today) || rec.getCheckOutTime() != null) {
+                        throw new RuntimeException(
+                                "Cannot approve leave: Employee was already marked Present on " + d + ". " +
+                                "Leave cannot be approved for days already attended.");
+                    }
+                }
+            }
         }
 
         double daysToDeduct = calculateLeaveDays(request.getFromDate(), request.getToDate(),

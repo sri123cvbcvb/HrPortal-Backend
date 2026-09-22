@@ -4,6 +4,9 @@ import com.hrms.backend.model.LeaveBalance;
 import com.hrms.backend.model.LeaveType;
 import com.hrms.backend.model.User;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
 import java.util.List;
@@ -14,4 +17,9 @@ public interface LeaveBalanceRepository extends JpaRepository<LeaveBalance, Long
     List<LeaveBalance> findByEmployee(User employee);
 
     Optional<LeaveBalance> findByEmployeeAndLeaveType(User employee, LeaveType leaveType);
+
+    @Modifying
+    @Query("DELETE FROM LeaveBalance lb WHERE lb.employee = :employee")
+    void deleteByEmployee(@Param("employee") User employee);
 }
+

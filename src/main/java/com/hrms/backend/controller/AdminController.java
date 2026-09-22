@@ -4,21 +4,31 @@ import com.hrms.backend.dto.AttendanceSummaryDto;
 import com.hrms.backend.dto.MessageResponse;
 import com.hrms.backend.dto.SignupRequest;
 import com.hrms.backend.dto.UpdateEmployeeRequest;
+import com.hrms.backend.model.LeaveRequest;
+import com.hrms.backend.model.Payslip;
 import com.hrms.backend.model.Role;
 import com.hrms.backend.model.RoleName;
 import com.hrms.backend.model.User;
+import com.hrms.backend.repository.AttendanceAuditLogRepository;
+import com.hrms.backend.repository.AttendanceRepository;
+import com.hrms.backend.repository.LeaveBalanceRepository;
+import com.hrms.backend.repository.LeaveRequestRepository;
+import com.hrms.backend.repository.PayslipRepository;
 import com.hrms.backend.repository.RoleRepository;
 import com.hrms.backend.repository.UserRepository;
 import com.hrms.backend.service.AttendanceService;
 import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.*;
 
+import java.security.Principal;
 import java.time.LocalDate;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 
 @CrossOrigin(origins = "*", maxAge = 3600)
@@ -30,14 +40,30 @@ public class AdminController {
     private final RoleRepository roleRepository;
     private final PasswordEncoder encoder;
     private final AttendanceService attendanceService;
+    private final AttendanceRepository attendanceRepository;
+    private final AttendanceAuditLogRepository attendanceAuditLogRepository;
+    private final LeaveBalanceRepository leaveBalanceRepository;
+    private final LeaveRequestRepository leaveRequestRepository;
+    private final PayslipRepository payslipRepository;
 
     public AdminController(UserRepository userRepository, RoleRepository roleRepository,
-                           PasswordEncoder encoder, AttendanceService attendanceService) {
+                           PasswordEncoder encoder, AttendanceService attendanceService,
+                           AttendanceRepository attendanceRepository,
+                           AttendanceAuditLogRepository attendanceAuditLogRepository,
+                           LeaveBalanceRepository leaveBalanceRepository,
+                           LeaveRequestRepository leaveRequestRepository,
+                           PayslipRepository payslipRepository) {
         this.userRepository = userRepository;
         this.roleRepository = roleRepository;
         this.encoder = encoder;
         this.attendanceService = attendanceService;
+        this.attendanceRepository = attendanceRepository;
+        this.attendanceAuditLogRepository = attendanceAuditLogRepository;
+        this.leaveBalanceRepository = leaveBalanceRepository;
+        this.leaveRequestRepository = leaveRequestRepository;
+        this.payslipRepository = payslipRepository;
     }
+
 
     @GetMapping("/employees")
     public ResponseEntity<?> getAllEmployees() {
@@ -149,12 +175,56 @@ public class AdminController {
     }
 
     @DeleteMapping("/employees/{id}")
-    public ResponseEntity<?> deleteEmployee(@PathVariable Long id) {
-        if (!userRepository.existsById(id)) {
+    @Transactional
+    public ResponseEntity<?> deleteEmployee(@PathVariable Long id, Principal principal) {
+        Optional<User> userOpt = userRepository.findById(id);
+        if (userOpt.isEmpty()) {
             return ResponseEntity.badRequest().body(new MessageResponse("Error: Employee not found."));
         }
-        userRepository.deleteById(id);
-        return ResponseEntity.ok(new MessageResponse("Employee deleted successfully."));
+
+        User user = userOpt.get();
+
+        if (principal != null && user.getUsername().equalsIgnoreCase(principal.getName())) {
+            return ResponseEntity.badRequest().body(new MessageResponse("Error: You cannot delete your own account."));
+        }
+        if ("admin".equalsIgnoreCase(user.getUsername())) {
+            return ResponseEntity.badRequest().body(new MessageResponse("Error: Cannot delete the primary admin account."));
+        }
+
+        try {
+            // 1. Nullify approvedBy in any leave requests approved by this user
+            leaveRequestRepository.nullifyApprovedBy(user);
+
+            // 2. Delete employee's leave requests
+            leaveRequestRepository.deleteByEmployee(user);
+
+            // 3. Delete employee's leave balances
+            leaveBalanceRepository.deleteByEmployee(user);
+
+            // 4. Delete attendance audit logs
+            attendanceAuditLogRepository.deleteByUser(user);
+
+            // 5. Delete attendance records
+            attendanceRepository.deleteByUser(user);
+
+            // 6. Delete payslips (cascades to payslip_components)
+            List<Payslip> payslips = payslipRepository.findByUserOrderByYearDescMonthDesc(user);
+            if (payslips != null && !payslips.isEmpty()) {
+                payslipRepository.deleteAll(payslips);
+            }
+
+            // 7. Clear roles to clean user_roles join table
+            user.getRoles().clear();
+            userRepository.save(user);
+
+            // 8. Delete user
+            userRepository.delete(user);
+
+            return ResponseEntity.ok(new MessageResponse("Employee deleted successfully."));
+        } catch (Exception e) {
+            return ResponseEntity.internalServerError()
+                    .body(new MessageResponse("Error deleting employee: " + e.getMessage()));
+        }
     }
 
     @GetMapping("/employees/{id}/attendance/summary")

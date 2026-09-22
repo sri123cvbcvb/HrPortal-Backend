@@ -9,6 +9,7 @@ import org.springframework.stereotype.Repository;
 import java.time.LocalDate;
 import java.util.List;
 
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
@@ -57,4 +58,13 @@ public interface LeaveRequestRepository extends JpaRepository<LeaveRequest, Long
                         "AND lr.fromDate <= :date AND lr.toDate >= :date")
         List<LeaveRequest> findApprovedOrPendingForDate(@Param("employee") User employee,
                         @Param("date") LocalDate date);
+
+        @Modifying
+        @Query("DELETE FROM LeaveRequest lr WHERE lr.employee = :employee")
+        void deleteByEmployee(@Param("employee") User employee);
+
+        @Modifying
+        @Query("UPDATE LeaveRequest lr SET lr.approvedBy = null WHERE lr.approvedBy = :user")
+        void nullifyApprovedBy(@Param("user") User user);
 }
+
